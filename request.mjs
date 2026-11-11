@@ -38,14 +38,91 @@ function hasInlineContent(item) {
   }
 }
 
+
+// The vendor load-balances across several Azure OpenAI resources. Item ids,
+// encrypted reasoning and previous_response_id are bound to the resource that
+// minted them; a request routed to another one is refused with "The requested
+// item was created under a different Azure OpenAI resource". These functions
+// drop that bookkeeping and keep the conversation: message content, call_id,
+// tool arguments and function-call pairing stay.
+function isNodeBound(item) {
+  return Boolean(item) && typeof item === "object" &&
+    (item.type === "reasoning" || "encrypted_content" in item ||
+      (typeof item.id === "string" && item.id.startsWith("rs_")));
+}
+
+function stripContentBlocks(content) {
+  if (!Array.isArray(content)) return false;
+  let changed = false;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const block = content[i];
+    if (!block || typeof block !== "object") continue;
+    if (isNodeBound(block)) {
+      content.splice(i, 1);
+      changed = true;
+    } else if ("id" in block) {
+      delete block.id;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function stripItemState(items) {
+  let changed = false;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (!item || typeof item !== "object") continue;
+    if (isNodeBound(item)) {
+      items.splice(i, 1);
+      changed = true;
+      continue;
+    }
+    // A failed assistant turn is an error the model cannot use; replaying it
+    // only feeds the next resource a broken history.
+    if (item.role === "assistant" && item.status === "error") {
+      items.splice(i, 1);
+      changed = true;
+      continue;
+    }
+    if ("id" in item) {
+      delete item.id;
+      changed = true;
+    }
+    if (stripContentBlocks(item.content)) changed = true;
+  }
+  return changed;
+}
+
+function stripNodeBoundState(body) {
+  let changed = false;
+  if ("previous_response_id" in body) {
+    delete body.previous_response_id;
+    changed = true;
+  }
+  if (Array.isArray(body.input) && stripItemState(body.input)) changed = true;
+  if (Array.isArray(body.messages)) {
+    for (const m of body.messages) {
+      if (!m || typeof m !== "object") continue;
+      for (const key of ["reasoning_content", "reasoning"]) {
+        if (key in m) {
+          delete m[key];
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 const MAX_BODY = 4 * 1024 * 1024;
 
 export async function prepareResponsesRequest(input, init = {}) {
   return prepareRequest(input, init);
 }
 
-export async function prepareRequest(input, init = {}, { portableResponses = true, textFilter = null } = {}) {
-  if (!portableResponses && !textFilter) return init;
+export async function prepareRequest(input, init = {}, { portableResponses = true, stripNodeState = false, textFilter = null } = {}) {
+  if (!portableResponses && !stripNodeState && !textFilter) return init;
   const request = input instanceof Request ? input : null;
   let pathname;
   try { pathname = new URL(request ? request.url : input).pathname; } catch { return init; }
@@ -65,9 +142,10 @@ export async function prepareRequest(input, init = {}, { portableResponses = tru
   if (!body || typeof body !== "object" || Array.isArray(body)) return init;
   const filtered = redactResponsesBody(body, textFilter);
   body = filtered.body;
+  const stripped = stripNodeState && stripNodeBoundState(body);
   const replayed = portableResponses && replayInline(body);
-  if (!filtered.replacements && !replayed) return init;
-  if (replayed) body.store = false;
+  if (!filtered.replacements && !stripped && !replayed) return init;
+  if (stripped || replayed) body.store = false;
   for (const name of ["content-length", "content-md5", "digest", "content-digest"]) headers.delete(name);
   return { ...init, body: JSON.stringify(body), headers };
 }

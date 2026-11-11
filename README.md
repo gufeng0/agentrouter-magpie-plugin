@@ -17,6 +17,7 @@
 - **模型供应商 `agentrouter`**：`gpt-5.6-sol`、`gpt-6-astra`、`gpt-6.1-sol`；站点只服务 Responses API，magpie 会把 agent 的 Chat / Anthropic 请求翻译成 Responses。
 - **请求头**：网关只认自己的客户端标识，默认发 Codex CLI 的 `User-Agent: codex_cli_rs/0.101.0`；可在供应商/账号级覆盖，开关 `send-codex-headers` 可以关掉默认头。
 - **Responses 请求改写**：`portable-responses` 把完整的 Responses item 内联重放，去掉只对某个后端有意义的 id/加密状态，保留 `call_id`、工具数据和加密内容；只有引用、没有内联内容的历史仍需要原资源。
+- **Azure 资源绑定状态清理**：默认去掉 `previous_response_id`、reasoning/encrypted_content 和 item id，避免多资源负载均衡时报 “different Azure OpenAI resource”。
 - **内容过滤**：读取插件目录下的 `content-filter.local.json`，只过滤你自己配置的词，不猜词；保留代码块、工具数据和加密状态。开关 `text-filter`。
 - **余额/用量**：`/api/user/self` 的 `quota` 和 `used_quota` 折算成美元；没有密码时按 Key 读累计消耗，不编造剩余余额。
 - **每日签到**：站点没有 `/api/user/checkin`，登录一次就是签到。`checked_in: true` → `claimed`（本次发了当天额度）；`false` → `done`（本次未新增，通常今天已领过）；缺失/非布尔 → `failed`（稍后重试）。
@@ -113,6 +114,26 @@ cp content-filter.example.json content-filter.local.json
 ```
 
 改完重启 magpie（或重新加载插件）生效。`content-filter.local.json` 只放本机，不要提交到仓库。
+
+## “The requested item was created under a different Azure OpenAI resource”
+
+AgentRouter 在多个 Azure OpenAI 资源之间负载均衡。上一轮的：
+
+- `previous_response_id`
+- `reasoning` / `encrypted_content`
+- item id（`msg_…`、`rs_…`、`fc_…` 等）
+
+都绑在创建它的那个资源上；下一轮被路由到另一个资源时，就会报这个错。
+
+插件的 **去掉 Azure 后端绑定状态**（`drop-azure-state`，默认开启）会在发送前移除这些绑定状态，保留：
+
+- 消息正文；
+- `function_call` / `function_call_output` 的 `call_id`；
+- 工具名和参数。
+
+代价是隐藏思维链不再跨轮延续，每一轮重新推理；对话内容和工具调用不受影响。
+
+如果请求里只有 `previous_response_id` / `item_reference`，没有完整的内联历史，插件无法无损恢复，需要客户端重发完整历史，或开新会话。
 
 ## 配置与凭据
 

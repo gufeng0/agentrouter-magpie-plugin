@@ -781,6 +781,7 @@ export const AgentRouterAuthPlugin = async (input) => {
   // provider and account — which every caller already passes.
   codexHeaders = () => input?.magpie?.option?.(PROVIDER, "send-codex-headers") !== false;
   const portableResponses = () => input?.magpie?.option?.(PROVIDER, "portable-responses") !== false;
+  const dropAzureState = () => input?.magpie?.option?.(PROVIDER, "drop-azure-state") === true;
   const textFilterEnabled = () => input?.magpie?.option?.(PROVIDER, "text-filter") !== false;
   return {
     // The provider before anyone signs in: the models the vendor serves, so the
@@ -907,6 +908,7 @@ export const AgentRouterAuthPlugin = async (input) => {
             const requestInit = { ...init, headers: h };
             const prepared = await prepareRequest(input, requestInit, {
               portableResponses: portableResponses(),
+              stripNodeState: dropAzureState(),
               textFilter: textFilterEnabled() ? textFilter : null,
             });
             return explainResponse(await fetch(input, prepared));
@@ -919,6 +921,18 @@ export const AgentRouterAuthPlugin = async (input) => {
 
       // Switches the user can turn on the provider's editor.
       options: [
+        {
+          key: "drop-azure-state",
+          label: "去掉 Azure 后端绑定状态",
+          labels: { zh: "去掉 Azure 后端绑定状态", en: "Drop Azure resource-bound state" },
+          default: true,
+          description:
+            "AgentRouter 在多个 Azure OpenAI 资源间负载均衡；上一轮的 item id、reasoning/encrypted_content 和 previous_response_id 绑在创建它的资源上，换到另一个资源会报 “The requested item was created under a different Azure OpenAI resource”。开启后发送前移除这些绑定状态，保留消息内容、call_id 和工具参数；代价是隐藏思维链不再跨轮延续。",
+          descriptions: {
+            zh: "AgentRouter 在多个 Azure OpenAI 资源间负载均衡；上一轮的 item id、reasoning/encrypted_content 和 previous_response_id 绑在创建它的资源上，换到另一个资源会报 “The requested item was created under a different Azure OpenAI resource”。开启后发送前移除这些绑定状态，保留消息内容、call_id 和工具参数；代价是隐藏思维链不再跨轮延续。",
+            en: "AgentRouter load-balances across Azure OpenAI resources; item ids, reasoning/encrypted_content and previous_response_id belong to the resource that minted them, and another resource refuses them with “The requested item was created under a different Azure OpenAI resource”. On, those resource-bound states are removed before sending while message content, call_id and tool arguments stay; hidden reasoning no longer carries across turns.",
+          },
+        },
         {
           key: "text-filter",
           label: "发送前过滤配置的词",
