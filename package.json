@@ -26,13 +26,6 @@
   "engines": {
     "node": ">=18.13"
   },
-  "magpie": {
-    "name": "AgentRouter",
-    "summary": {
-      "zh": "AgentRouter 模型供应商 + 每日签到（无 GitHub 授权）",
-      "en": "AgentRouter provider and daily check-in (no GitHub authorization)"
-    }
-  },
   "scripts": {
     "test": "node --test *.test.mjs"
   },
