@@ -51,7 +51,6 @@ const DEFAULT_HEADERS = {
 
 // How many model keys one list read covers. A count at the page size means
 // the list was cut, not that the account has that many.
-const MODEL_KEY_PAGE_SIZE = 50;
 
 // Models are listed by the vendor, so this is only what to show before a
 // sign-in and the shape (limits, tool calls) each listed model takes.
@@ -93,13 +92,6 @@ const siteOf = (id) => SITES[id] ?? SITES.air;
 // Two of the three sign-in methods ask these first, so they are named once.
 // The host reads them the way the plugin's own prompts gave them: the site
 // pick first, then the system access token that is not a model Key.
-const ACCESS_TOKEN_PROMPT = {
-  type: "password",
-  key: "accessToken",
-  message: "系统访问令牌（AgentRouter 个人设置 → 访问令牌；不是模型 API Key）",
-  validate: value => String(value ?? "").trim() ? undefined : "请输入系统访问令牌；如已有模型 Key，请改用 API Key 入口",
-};
-
 function withTimeout(ms) {
   return AbortSignal.timeout(ms);
 }
@@ -318,13 +310,6 @@ function userHeaders(provider, auth) {
   return h;
 }
 
-// masked keeps a value out of a message: a key or a token never goes into
-// an error the user sees or a log line.
-function masked(v) {
-  const s = String(v ?? "");
-  if (s.length <= 8) return s ? "…" : "";
-  return `${s.slice(0, 4)}…${s.slice(-4)}`;
-}
 
 async function jsonOrText(res) {
   const text = await res.text();
@@ -353,140 +338,6 @@ async function jsonOrText(res) {
 // route before the address bar can be read (linuxdo-login, verified against
 // the real site's bundle). Nothing here redirects to those routes, so a
 // browser sign-in hands the code to the app, not to this plugin.
-const GITHUB_CALLBACK_PATH = "/oauth/github/magpie";
-
-// Login accepts only a full callback URL belonging to this flow.
-function githubCallbackCode(pasted, expectedURL, state) {
-  const text = String(pasted ?? "").trim();
-  if (!text || text.length > 8192) return "";
-  try {
-    const url = new URL(text);
-    const expected = new URL(expectedURL);
-    const params = url.searchParams;
-    if (url.origin !== expected.origin || url.pathname !== expected.pathname ||
-        url.username || url.password || url.hash || params.has("error") ||
-        params.getAll("state").length !== 1 || params.get("state") !== state ||
-        params.getAll("code").length !== 1) return "";
-    const code = params.get("code");
-    return /^[A-Za-z0-9_-]{8,2048}$/.test(code ?? "") ? code : "";
-  } catch {
-    return "";
-  }
-}
-
-// callbackUrl is where GitHub is asked to send the browser. It has to sit on
-// the origin the site's app registered — the site's own web routes, which the
-// site reports — because GitHub checks the callback's host, and the code is
-// checked against the site's app rather than against anything here.
-const callbackUrl = (origin) => `${origin}${GITHUB_CALLBACK_PATH}`;
-
-// oauthState asks the site for the state its GitHub sign-in expects. The site
-// issues it and later checks it on the callback, so it can't be made up here.
-async function oauthState(base) {
-  try {
-    const res = await fetch(`${base}/api/oauth/state?mode=login`, {
-      headers: DEFAULT_HEADERS,
-      signal: withTimeout(REQUEST_TIMEOUT),
-    });
-    const { json } = await jsonOrText(res);
-    const st = typeof json?.data === "string" ? json.data.trim() : "";
-    if (!res.ok || json?.success !== true || !st) return { ok: false, why: "站点没有下发 OAuth state" };
-    const stateCookie = sessionOf(res);
-    return { ok: true, state: st, stateCookie };
-  } catch (e) {
-    return { ok: false, why: `拿不到 OAuth state：${e?.message ?? String(e)}` };
-  }
-}
-
-// siteAuthConfig reads the facts the authorize URL needs out of the site's own
-// status: the GitHub app whose callback the site owns, and the origin that
-// callback lives on. The origin is not simply the front door the user picked —
-// the vendor runs two (org and air) for the same accounts, and GitHub matches
-// the callback against the app's registered host, which only the site's own
-// `server_address` names.
-async function siteAuthConfig(base) {
-  try {
-    const res = await fetch(`${base}/api/status`, {
-      headers: DEFAULT_HEADERS,
-      signal: withTimeout(REQUEST_TIMEOUT),
-    });
-    const { json } = await jsonOrText(res);
-    const id = typeof json?.data?.github_client_id === "string" ? json.data.github_client_id.trim() : "";
-    if (!res.ok || !id) return { ok: false, why: "站点没有开启 GitHub 登录" };
-    const reported = json.data.server_address;
-    if (reported != null && typeof reported !== "string") return { ok: false, why: "站点回调地址无效" };
-    const url = new URL(String(reported ?? "").trim() || base);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash ||
-        !Object.values(SITES).some(site => site.site === url.origin)) {
-      return { ok: false, why: "站点回调地址不受信任" };
-    }
-    return { ok: true, id, origin: url.origin };
-  } catch (e) {
-    return { ok: false, why: `读不到站点配置：${e?.message ?? String(e)}` };
-  }
-}
-
-// sessionOf pulls the site's session cookie out of a response. This site
-// answers a sign-in by setting `session` rather than by putting a token in
-// the body, and `get("set-cookie")` joins every cookie with ", " — a
-// character that also appears inside one (an Expires date) — so the separate
-// entries are what get read when the runtime offers them.
-function sessionOf(res) {
-  let lines = [];
-  try {
-    if (typeof res.headers.getSetCookie === "function") lines = res.headers.getSetCookie() ?? [];
-  } catch {
-    lines = [];
-  }
-  if (!lines.length) {
-    const joined = res.headers.get("set-cookie");
-    if (joined) lines = [joined];
-  }
-  for (const line of lines) {
-    const m = /(?:^|[;,])\s*session=([^;,\s]+)/.exec(String(line));
-    if (m) return m[1];
-  }
-  return "";
-}
-
-// redeemGithub trades the code for the site's sign-in. The answer is the user
-// record: `quota` is the balance and `checked_in` says whether this sign-in
-// granted the day's credit, and the same response carries the session the
-// /api/user routes take. The account keeps this session alongside the
-// system access token explicitly entered before authorization.
-async function redeemGithub(base, code, state, inputs) {
-  const token = String(inputs.accessToken ?? "").trim();
-  if (!token) return { type: "failed", error: "缺少系统访问令牌，请重新登录或改用 API Key 接入。" };
-  const headers = { ...DEFAULT_HEADERS };
-  if (inputs.stateCookie) headers.Cookie = "session=" + inputs.stateCookie;
-  const u = new URL(base + "/api/oauth/github");
-  u.searchParams.set("code", code);
-  u.searchParams.set("state", state);
-  u.searchParams.set("mode", "login");
-  const res = await fetch(u, { headers, redirect: "manual", signal: withTimeout(REQUEST_TIMEOUT) });
-  const session = sessionOf(res);
-  const { json } = await jsonOrText(res);
-  const d = json?.data;
-  if (!res.ok || json?.success !== true || !d?.id) {
-    return { type: "failed", error: "GitHub 授权兑换未完成，授权码可能已使用或过期；请重新授权或改用 API Key 接入。" };
-  }
-  const found = await keyOf(base, token, String(d.id));
-  if (found.kind !== "found") {
-    return { type: "failed", error: keyProblem(found.kind) + "。请改用 API Key 接入，或确认后主动重试。" };
-  }
-  return {
-    type: "success",
-    key: found.key,
-    metadata: {
-      site: base === SITES.air.site ? "air" : "org",
-      ...(base === SITES.air.site ? { apiBase: `${SITES.air.api}/v1` } : {}),
-      accessToken: token,
-      userId: String(d.id),
-      ...(session ? { cookie: "session=" + session } : {}),
-    },
-  };
-}
-
 function keyProblem(kind) {
   const messages = {
     invalidId: "模型 Key ID 需为纯数字，或留空",
@@ -503,10 +354,6 @@ function keyProblem(kind) {
   return messages[kind] ?? "无法读取模型 Key";
 }
 
-function modelKeyIdProblem(value) {
-  const id = String(value ?? "").trim();
-  return !id || /^[1-9][0-9]*$/.test(id) ? undefined : keyProblem("invalidId");
-}
 
 function usableModelKey(value) {
   if (typeof value !== "string") return false;
@@ -522,22 +369,6 @@ function enabledModelKey(item) {
   return item.key.trim();
 }
 
-function selectModelKey(json, pageSize) {
-  const data = json?.data;
-  const items = Array.isArray(data) ? data : data?.items;
-  if (!Array.isArray(items)) return { kind: "unsupported" };
-  const total = Array.isArray(data) ? json.total : data?.total;
-  if (total != null && (!Number.isSafeInteger(total) || total < items.length)) return { kind: "unsupported" };
-  if (total != null ? total > items.length : items.length >= pageSize) return { kind: "incomplete" };
-  const keys = new Set();
-  for (const item of items) {
-    const key = enabledModelKey(item);
-    if (key) keys.add(key);
-  }
-  if (keys.size === 0) return { kind: "missing" };
-  if (keys.size !== 1) return { kind: "ambiguous" };
-  return { kind: "found", key: keys.values().next().value };
-}
 
 // pickModelKey chooses one of the account's own model keys: the enabled,
 // complete, unexpired one with the most room. It is what lets the sign-in
@@ -584,52 +415,26 @@ async function sessionModelKey(provider, auth, login) {
   }
 }
 
-async function keyOf(base, token, id) {
-  const pageSize = 10;
+// sessionOf pulls the site's session cookie out of a response. The site
+// answers a sign-in by setting `session` rather than by putting a token in
+// the body; getSetCookie() keeps each Set-Cookie apart, and a runtime
+// without it gives one joined header, which the session match still reads.
+function sessionOf(res) {
+  let lines = [];
   try {
-    const res = await fetch(base + "/api/token/?p=1&page_size=" + pageSize, {
-      headers: { ...DEFAULT_HEADERS, Authorization: token, "New-Api-User": id },
-      signal: withTimeout(REQUEST_TIMEOUT),
-    });
-    const { json, text } = await jsonOrText(res);
-    if (!json && /^\s*</.test(text)) return { kind: "blocked" };
-    if (res.status === 401 || res.status === 403) return { kind: "rejected" };
-    if (!res.ok) return { kind: "upstream" };
-    if (json?.success === false) return { kind: "rejected" };
-    return selectModelKey(json, pageSize);
+    if (typeof res.headers.getSetCookie === "function") lines = res.headers.getSetCookie() ?? [];
   } catch {
-    return { kind: "network" };
+    lines = [];
   }
-}
-
-// storedKeyOf is the same read for the sign-in that already holds the system
-// token and the user id: no provider code, no login, only the account's own
-// keys. A named Key ID reads that one key on its own; otherwise the account
-// needs exactly one enabled key to be usable without a choice.
-async function storedKeyOf(base, token, id, keyId) {
-  const requested = String(keyId ?? "").trim();
-  if (modelKeyIdProblem(requested)) return { kind: "invalidId" };
-  try {
-    const url = requested ? `${base}/api/token/${requested}` : `${base}/api/token/?p=1&page_size=${MODEL_KEY_PAGE_SIZE}`;
-    const res = await fetch(url, {
-      headers: { ...DEFAULT_HEADERS, Authorization: token, "New-Api-User": id },
-      signal: withTimeout(REQUEST_TIMEOUT),
-    });
-    const { json, text } = await jsonOrText(res);
-    if (!json && /^\s*</.test(text)) return { kind: "blocked" };
-    if (res.status === 401 || res.status === 403) return { kind: "rejected" };
-    if (!res.ok) return { kind: "upstream" };
-    // A list that answers a business failure is a credential the site refuses;
-    // a named id that answers one simply is not this account's key.
-    if (json?.success === false) return requested ? { kind: "missing" } : { kind: "rejected" };
-    if (requested) {
-      const key = enabledModelKey(json?.data);
-      return key ? { kind: "found", key } : { kind: "missing" };
-    }
-    return selectModelKey(json, MODEL_KEY_PAGE_SIZE);
-  } catch {
-    return { kind: "network" };
+  if (!lines.length) {
+    const joined = res.headers.get("set-cookie");
+    if (joined) lines = [joined];
   }
+  for (const line of lines) {
+    const m = /(?:^|[;,])\s*session=([^;,\s]+)/.exec(String(line));
+    if (m) return m[1];
+  }
+  return "";
 }
 
 // signIn is one POST to the site's login route, and it is the whole feature:
@@ -1180,7 +985,6 @@ export const _internal = {
   apiBase,
   siteBase,
   userHeaders,
-  masked,
   isURLish,
   declaredModels,
 };
