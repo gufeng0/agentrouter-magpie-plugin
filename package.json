@@ -1,0 +1,45 @@
+{
+  "name": "magpie-plugin-agentrouter",
+  "version": "0.2.0",
+  "description": "AgentRouter for magpie: full model provider (Responses API), Responses request rewriting, content filter, balance and daily check-in. No GitHub authorization.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "request.mjs",
+    "response.mjs",
+    "body-inspection.mjs",
+    "content-filter.mjs",
+    "content-filter.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "agentrouter",
+    "responses",
+    "checkin"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.13"
+  },
+  "magpie": {
+    "name": "AgentRouter",
+    "summary": {
+      "zh": "AgentRouter 模型供应商 + 每日签到（无 GitHub 授权）",
+      "en": "AgentRouter provider and daily check-in (no GitHub authorization)"
+    },
+    "icon": "https://ps.air-outer.com/logo.png"
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gufeng0/agentrouter-magpie-plugin.git"
+  },
+  "homepage": "https://github.com/gufeng0/agentrouter-magpie-plugin"
+}

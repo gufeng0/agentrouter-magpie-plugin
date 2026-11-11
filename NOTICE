@@ -1,0 +1,10 @@
+This project contains code derived from these MIT-licensed projects:
+
+- https://github.com/ZhaoJun233/agentrouter-magpie-plugin
+- https://github.com/22952497/agentrouter-magpie
+
+Their copyright notice and the MIT permission notice are preserved in
+LICENSE. This project's changes include: the site fixed to
+ps.air-outer.com, GitHub authorization and the local GitHub-cookie
+check-in removed, the model key read from the account's /api/token list,
+and the provider/check-in/usage presentation adjusted for this plugin.

@@ -1,0 +1,9 @@
+node_modules/
+content-filter.local.json
+plugin-auth.json
+providers.json
+quotas.json
+settings.json
+*.log
+.DS_Store
+.env
