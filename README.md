@@ -24,12 +24,19 @@
 ## 安装
 
 ```bash
-magpie plugin add /Users/zm/tmp/AgentRouter
+magpie plugin add github:gufeng0/agentrouter-magpie-plugin
 ```
 
-> 如果还装着旧的 `opencode-agentrouter-auth`，它会和这里的 `agentrouter` 抢同一个 provider id；先移除：
+本地开发时也可以直接装目录：
+
+```bash
+magpie plugin add /path/to/AgentRouter
+```
+
+> 这个插件使用 provider id `agentrouter`。如果还装着 `opencode-agentrouter-auth`、`agentrouter-magpie` 或其他占用 `agentrouter` 的插件，先移除它们，否则会互相抢同一个 provider：
 > ```bash
 > magpie plugin rm opencode-agentrouter-auth
+> magpie plugin rm 22952497/agentrouter-magpie
 > ```
 
 你已有的 `Agent Router custom`（`agent-router`）如果也是同一个站点，会和这个插件重复列出 3 个模型；可以保留、停用或删除其中一个。
