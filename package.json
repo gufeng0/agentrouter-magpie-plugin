@@ -1,6 +1,6 @@
 {
   "name": "magpie-plugin-agentrouter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AgentRouter for magpie: full model provider (Responses API), Responses request rewriting, content filter, balance and daily check-in. No GitHub authorization.",
   "type": "module",
   "main": "./index.mjs",

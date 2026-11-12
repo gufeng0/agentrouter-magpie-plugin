@@ -150,7 +150,7 @@ AgentRouter 在多个 Azure OpenAI 资源之间负载均衡。上一轮的：
 node --test *.test.mjs
 ```
 
-当前 159 个测试通过，覆盖请求改写、内容过滤、Responses 保留、流式边界、余额和签到语义。
+当前 164 个测试通过，覆盖请求改写、内容过滤、Responses 保留、流式边界、余额和签到语义。
 
 ## 来源
 
