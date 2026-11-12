@@ -104,7 +104,57 @@ test("sign-in reads the model key from the account's token list", async () => {
     assert.equal(r.metadata.email, "alice");
     assert.equal(r.metadata.password, "hunter2");
     assert.equal(r.metadata.userId, "113947");
+    assert.equal(r.metadata.cookie, "session=abc");
     assert.ok(calls.some((c) => c.path === "/api/token/"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("check-in saves the session cookie it receives", async () => {
+  const original = globalThis.fetch;
+  const saved = [];
+  const client = {
+    auth: {
+      async set(payload) { saved.push(payload); },
+    },
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify({ success: true, data: { id: 113947, checked_in: true } }), {
+    headers: { "content-type": "application/json", "set-cookie": "session=fresh-session; Path=/; HttpOnly" },
+  });
+  try {
+    const p = await plugin({ client });
+    const r = await p.auth.checkin(async () => auth(), {});
+    assert.equal(r.outcome, "claimed");
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0].path, { id: "agentrouter" });
+    assert.equal(saved[0].body.metadata.cookie, "session=fresh-session");
+    assert.equal(saved[0].body.metadata.username, "alice");
+    assert.equal(saved[0].body.metadata.password, "hunter2");
+    assert.equal(saved[0].body.cookie, "session=fresh-session");
+    assert.equal(saved[0].body.userId, "113947");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a session identical to the saved one is not written again", async () => {
+  const original = globalThis.fetch;
+  const saved = [];
+  const client = {
+    auth: {
+      async set(payload) { saved.push(payload); },
+    },
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify({ success: true, data: { id: 113947, checked_in: true } }), {
+    headers: { "content-type": "application/json", "set-cookie": "session=fresh-session; Path=/; HttpOnly" },
+  });
+  try {
+    const p = await plugin({ client });
+    const kept = auth({ cookie: "session=fresh-session", userId: "113947" });
+    const r = await p.auth.checkin(async () => kept, {});
+    assert.equal(r.outcome, "claimed");
+    assert.equal(saved.length, 0);
   } finally {
     globalThis.fetch = original;
   }

@@ -507,27 +507,35 @@ async function signIn(provider, auth) {
   };
 }
 
-// Try the read-only user endpoint first, then password sign-in. Preserve
-// the failure reason when neither returns a complete quota record.
-async function balance(provider, auth) {
-  const viaToken = await balanceByToken(provider, auth);
-  if (viaToken.ok) return viaToken;
-  const viaLogin = await signIn(provider, auth);
-  if (viaLogin.ok && viaLogin.balance) return { ok: true, balance: viaLogin.balance };
-  if (viaLogin.ok) {
-    // The sign-in answered without a usable balance (0/0 is New API's
-    // loading state). Ask /api/user/self with the session it just gave.
-    const signed = { ...auth, cookie: viaLogin.cookie, userId: viaLogin.userId };
-    const again = await balanceByToken(provider, signed);
-    if (again.ok || again.pending || again.expired || again.blocked) return again;
-    return { ok: false, why: viaLogin.pending ? "pending" : "no-quota", pending: viaLogin.pending };
+// keepSession writes back the session a successful sign-in just received, so
+// quota reads can use it without logging in again. The site hands out a new
+// `session` cookie on every login; without this, the cookie from check-in was
+// thrown away and every quota read logged in afresh. Best effort: a failed
+// save must not turn a good sign-in into a failure.
+async function keepSession(client, auth, session) {
+  if (!client?.auth?.set || !session?.cookie) return;
+  const cookie = String(session.cookie).trim();
+  const userId = String(session.userId ?? "").trim();
+  if (cookie === String(meta(auth, "cookie") ?? "").trim() &&
+      (!userId || userId === String(meta(auth, "userId") ?? "").trim())) return;
+  const metadata = { ...(auth?.metadata ?? {}), cookie };
+  if (userId) metadata.userId = userId;
+  // The flat shape is what some hooks receive; keep both readings in step.
+  const body = { ...auth, cookie, metadata };
+  if (userId) body.userId = userId;
+  try {
+    await client.auth.set({ path: { id: PROVIDER }, body });
+  } catch {
+    // The sign-in stands even when the session can't be kept.
   }
-  // Report the reason the user can act on: a wrong password outranks a
-  // captcha, and a missing password means the token route's failure is the
-  // real one.
-  if (viaLogin.why === "bad-password") return { ok: false, why: "expired", expired: true, message: viaLogin.message };
-  if (viaLogin.why !== "no-password") return viaLogin;
-  return viaToken;
+}
+
+// Try the saved session only; a quota read never signs in. The password is
+// for check-in and the model key, and check-in is what keeps the session
+// fresh. If the cookie has gone stale, the card says so until the next
+// check-in rather than logging in again behind the user's back.
+async function balance(provider, auth) {
+  return balanceByToken(provider, auth);
 }
 
 // Read /api/user/self with either an access token or a browser session.
@@ -626,20 +634,20 @@ async function usageOf(getAuth, provider) {
       const reason = b.blocked
         ? "余额接口被滑动验证码拦截"
         : b.pending ? "网站余额仍在加载，稍后刷新"
-        : b.expired ? "站点拒绝了余额查询凭据，请核对用户名密码或访问令牌" : "余额接口未返回可用余额";
+        : b.expired ? "保存的 Cookie/访问令牌已失效" : "余额接口未返回可用余额";
       return {
-        error: `AgentRouter：累计消耗 $${spend.spent.toFixed(2)}；剩余额度未知（${reason}）。读取余额需有效的 Cookie/访问令牌和用户 ID，或站点用户名密码；Cookie 不能保证通过验证码`,
+        error: `AgentRouter：累计消耗 $${spend.spent.toFixed(2)}；剩余额度未知（${reason}）。余额读取只用保存的 Cookie/访问令牌，不会重新登录；签到会保存新的 Cookie`,
         windows: [],
       };
     }
     const why =
       b.expired
-        ? "AgentRouter：站点拒绝了凭据，请核对用户名密码、访问令牌或 Cookie 及用户 ID"
+        ? "AgentRouter：保存的 Cookie/访问令牌已失效，不会重新登录；等下次签到保存新 Cookie 后再读"
         : b.blocked
-          ? "AgentRouter：余额接口被滑动验证码拦截，剩余额度未知。Cookie 不能保证通过验证码；可尝试有效的站点用户名密码读取余额"
+          ? "AgentRouter：余额接口被滑动验证码拦截，剩余额度未知。Cookie 不能保证通过验证码；签到后会用新的 Cookie 再试"
           : b.pending ? "AgentRouter：网站余额仍在加载，尚无本地缓存，请稍后刷新"
           : b.why === "no-token"
-            ? "AgentRouter：账号里没有访问令牌，也没有浏览器 Cookie，无法读取余额（个人设置 → 访问令牌）"
+            ? "AgentRouter：账号里没有保存的 Cookie 或访问令牌，无法读取余额；不会用用户名密码重新登录，签到后会保存 Cookie"
             : b.why === "no-quota"
               ? "AgentRouter：站点没有返回额度字段"
               : `AgentRouter：无法读取余额（${b.why}）`;
@@ -701,10 +709,11 @@ function checkinResult(checkedIn) {
 // when the site explicitly reports no new grant (not proof of an earlier one). A
 // wrong password is the account's to fix and settles for the day; a site
 // that is down is retried, as magpie retries any `failed`.
-async function checkinOf(getAuth, provider) {
+async function checkinOf(getAuth, provider, client) {
   const auth = await getAuth();
   if (!auth) return { outcome: "failed", message: "AgentRouter：尚未登录" };
   const r = await signIn(provider, auth);
+  if (r.ok) await keepSession(client, auth, r);
   if (!r.ok) {
     if (r.why === "no-password") {
       return {
@@ -877,6 +886,7 @@ export const AgentRouterAuthPlugin = async (input) => {
                 email: username,
                 password,
                 ...(login.userId ? { userId: login.userId } : {}),
+                ...(login.cookie ? { cookie: login.cookie } : {}),
               },
             };
           },
@@ -917,7 +927,7 @@ export const AgentRouterAuthPlugin = async (input) => {
       },
 
       usage: usageOf,
-      checkin: checkinOf,
+      checkin: (getAuth, provider) => checkinOf(getAuth, provider, input?.client),
 
       // Switches the user can turn on the provider's editor.
       options: [

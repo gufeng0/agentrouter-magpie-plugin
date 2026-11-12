@@ -218,6 +218,29 @@ test('Cookie-only account reads remaining balance and real consumption', async (
   assert.equal(usage.windows[0].used, 25);
 });
 
+test('A quota read never signs in and never saves a session', async () => {
+  // The password is for check-in, not for quota reads: a read with no saved
+  // cookie tries the key's consumption only.
+  const original = globalThis.fetch;
+  const saved = [];
+  const p = await AgentRouterAuthPlugin({ client: { auth: { set: async (payload) => saved.push(payload) } } });
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return json({ total_usage: 123.45 });
+  };
+  try {
+    const usage = await p.auth.usage(async () => ({ key: 'sk-example', metadata: { username: 'alice', password: 'hunter2' } }), {});
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.endsWith('/dashboard/billing/usage'));
+    assert.equal(saved.length, 0);
+    assert.match(usage.error, /不会重新登录|没有保存的 Cookie/);
+    assert.equal(usage.balance, undefined);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('WAF-blocked balance falls back to account consumption without inventing remaining quota', async () => {
   const { usage, calls } = await readUsage(
     { key: 'sk-example', metadata: { cookie: 'session=example', userId: '123' } },
@@ -249,24 +272,28 @@ test('Key-only account can report zero consumption without claiming zero balance
   assert.deepEqual(usage.windows, []);
 });
 
-test('Successful login without quota does not crash or invent balance', async () => {
-  const { usage } = await readUsage(
+test('A password-only account is not signed in for a quota read', async () => {
+  const { usage, calls } = await readUsage(
     { metadata: { username: 'example', password: 'example' } },
-    [json({ success: true, data: { checked_in: true } })],
+    [],
   );
-  assert.match(usage.error, /没有返回额度字段/);
+  assert.equal(calls.length, 0);
+  assert.match(usage.error, /没有保存的 Cookie|不会用用户名密码重新登录/);
   assert.equal(usage.balance, undefined);
 });
 
-test('Password login supplies balance when user read is blocked', async () => {
-  const { usage } = await readUsage(
-    { metadata: { accessToken: 'example', username: 'example', password: 'example' } },
-    [new Response('<html>captcha</html>'), json({ success: true, data: { quota: 0, used_quota: 500000, username: 'example' } })],
+test('A stale cookie is not refreshed by a password login', async () => {
+  const { usage, calls } = await readUsage(
+    { metadata: { cookie: 'session=example', userId: '123', username: 'example', password: 'example' } },
+    [json({ success: false, message: 'access token 无效' }), json({ success: true, data: { quota: 4500000 } })],
   );
-  assert.equal(usage.balance, '$0.00');
-  assert.equal(usage.plan, undefined);
-  assert.equal(usage.user, 'example');
-  assert.equal(usage.windows[0].used, 100);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((c) => !String(c.url).includes('/api/user/login')));
+  assert.ok(calls[1].url.endsWith('/api/log/self/stat'));
+  assert.match(usage.error, /已失效/);
+  assert.match(usage.error, /不会重新登录/);
+  assert.match(usage.error, /累计消耗 \$9\.00/);
+  assert.equal(usage.balance, undefined);
 });
 
 test('Malformed account and billing amounts stay unknown', async () => {
